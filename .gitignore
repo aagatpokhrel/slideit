@@ -1,0 +1,11 @@
+/slideit-env
+/env
+/venv
+
+model/*
+!/model/config.py
+!/model/__init__.py
+!/model/pipeline.py
+
+gslides/__pycache__
+app/__pycache__
