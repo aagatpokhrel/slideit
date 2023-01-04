@@ -7,6 +7,8 @@ model/*
 !/model/__init__.py
 !/model/pipeline.py
 
-gslides/__pycache__
+slidegen/__pycache__
 app/__pycache__
 /slidev
+
+videogen/__pycache__
