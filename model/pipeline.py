@@ -1,13 +1,13 @@
 import nltk
 nltk.download('punkt')
-from nltk import sent_tokenize
+from nltk import sent_tokenize, word_tokenize
 import math
 
 from model.config import *
 import numpy as np
 from keras_preprocessing.sequence import pad_sequences
 from sklearn.cluster import KMeans
-from sklearn.neighbors import NearestNeighbors
+from scipy.spatial.distance import cosine
 
 def create_attention_mask(input_ids):
   attention_masks = []
@@ -16,16 +16,7 @@ def create_attention_mask(input_ids):
     attention_masks.append(att_mask)  # basically attention_masks is a list of list
   return attention_masks
 
-def return_clusters(sentence_features, number_extract):
-    kmeans = KMeans(n_clusters=number_extract, random_state=0).fit(sentence_features)
-    cluster_centers = kmeans.cluster_centers_
-    nbrs = NearestNeighbors(n_neighbors= 1,algorithm='brute').fit(sentence_features)
-    distances, indices = nbrs.kneighbors(cluster_centers.reshape(number_extract,-1))
-    indices = np.sort(indices.reshape(1,-1))
-    return indices[0]
-
-def extractive_sum(text):
-    # Extractive summarization
+def get_sentence_features(text):
     paragraph_split = sent_tokenize(text)
     input_tokens = []
     for i in paragraph_split:
@@ -38,51 +29,103 @@ def extractive_sum(text):
     input_ids = pad_sequences(input_tokens, maxlen=100, dtype="long", value=0, truncating="post", padding="post")
     input_masks = create_attention_mask(input_ids)
     
-    #creating a tensor for input_ids and input_masks
+    ##--For CPU --##
     input_ids = torch.tensor(input_ids, dtype=torch.long)
     input_masks = torch.tensor(input_masks, dtype=torch.long)
+
+    ##--For GPU --##
+    # input_ids = torch.tensor(input_ids, dtype=torch.long).to(device)
+    # input_masks = torch.tensor(input_masks, dtype=torch.long).to(device)
 
     with torch.no_grad():
         outputs = model(input_ids, attention_mask=input_masks)
 
     encoder_output = outputs.encoder_last_hidden_state
+
+    ## -- For CPU --## Because it is assumed to be on CPU .cpu() function is not used
     sentence_features = encoder_output[:,0,:].detach().numpy()
 
-    topic_answer = []
-    for i in return_clusters(sentence_features, 15):
-        topic_answer.append(paragraph_split[i])
+    ## -- For GPU --## Because it is assumed to be on GPU .cpu() function is used
+    # sentence_features = encoder_output[:,0,:].detach().cpu().numpy()
 
-    return topic_answer
+    return sentence_features
+
+def clustering(text, features, number_extract=3):
+    text = sent_tokenize(text)
+    kmeans = KMeans(n_clusters=number_extract, 
+                    random_state=0).fit(features)
+    feature_space = {}
+    cluster_space = {}
+    for k, (i, j)  in enumerate(zip(kmeans.labels_, text)):
+        cluster_space.setdefault(i, []).append(j)
+        feature_space.setdefault(i, []).append(features[k]) #this might be the culprit
+    cluster_centers = kmeans.cluster_centers_
+    return cluster_space, feature_space, cluster_centers
+
+def extractive_sum(cluster_center, sentence_list, feature_list):
+    # Extractive summarization
+    sentences = ''.join(sentence_list)
+    word_count = len(word_tokenize(sentences))
+    if (word_count < 400):
+        yank = 0.8
+    else:
+        yank = 400/word_count
+
+    similarity_index = [cosine(cluster_center, sentence_feature) for sentence_feature in feature_list]
+    
+    ranked_sent = np.argsort(similarity_index)
+    extracted_sent = math.floor(yank * len(sentence_list))
+    ranked_and_yanked = ranked_sent[:extracted_sent]
+    new_sent = [sentence_list[i] for i in ranked_and_yanked]
+    sentences= ''.join(new_sent)
+    return sentences
 
 def abstractive_sum(text):
     # Abstractive summarization
     input_ids = tokenizer(
-        text, max_length=1024,
+        text, max_length=400,
         truncation=True, padding='max_length',
         return_tensors='pt'
     ).to(device)
 
+    ## -- For CPU --## 
     summaries = model.generate(
         input_ids=input_ids['input_ids'],
         attention_mask=input_ids['attention_mask'],
-        max_length=512,
-        min_length=256
+        max_length=200,
+        min_length=100
     )
+
+    ## -- For GPU --##
+    # summaries = model.cuda().generate(
+    # input_ids=input_ids['input_ids'],
+    #    attention_mask=input_ids['attention_mask'],
+    #    max_length=200,
+    #    min_length=100
+    #)
+
     decoded_summaries = [tokenizer.decode(s, skip_special_tokens=True, clean_up_tokenization_spaces=True) for s in summaries]
-    return decoded_summaries
+    return decoded_summaries[0]
 
-def summarize(text):
-    topic_answer = extractive_sum(text)
-    extracted_text = ' '.join(topic_answer)
-    abstractive_answer = abstractive_sum(extracted_text)
-    sentences = sent_tokenize(abstractive_answer[0])
-    num_of_sents = len(sentences)
-    generated_sentences = {}
-    sent_per_slide = 4
-    num_of_slides = math.ceil(num_of_sents/sent_per_slide)
-    k=0
-    for i in range(num_of_slides):
-        generated_sentences[i] = sentences[k:k+sent_per_slide]
-        k=k+sent_per_slide
+def get_slide_content(text):
+    topics = ['Background', 'Details', 'Conclusion']
+    sent_per_slide = 3
+    slide_content = {'Background': None, 'Details': None, 'Conclusion': None}
+    total_slides = 0
 
-    return generated_sentences
+    sentence_features = get_sentence_features(text)
+    cluster_space, feature_space, cluster_centers = clustering(text, sentence_features)
+
+    for label, sentences in cluster_space.items():
+        extracted_text = extractive_sum(cluster_centers[label], sentences, feature_space[label])
+        abstractive_answer = abstractive_sum(extracted_text)
+        sentences = sent_tokenize(abstractive_answer)
+        num_of_slides = math.ceil(len(sentences)/sent_per_slide)
+        section_slides = {}
+        for i in range(num_of_slides):
+            section_slides[i] = sentences[k:k+sent_per_slide]
+            k=k+sent_per_slide
+
+        slide_content[topics[label]] = section_slides
+
+    return slide_content

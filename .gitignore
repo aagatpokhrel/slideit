@@ -2,13 +2,14 @@
 /env
 /venv
 
+*/__pycache__
 model/*
 !/model/config.py
 !/model/__init__.py
 !/model/pipeline.py
 
-slidegen/__pycache__
-app/__pycache__
-/slidev
+marp
+marp.exe
 
-videogen/__pycache__
+output.html
+output.md

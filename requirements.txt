@@ -69,5 +69,4 @@ wrapt==1.14.1
 zipp==3.8.1
 Pillow==9.0.1
 reportlab==3.6.8
-gTTS==2.3.0
-pdf2image==1.16.0
+newspaper3k==0.2.8
